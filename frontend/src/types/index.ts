@@ -1,6 +1,7 @@
 export interface User {
   id: string;
   name: string;
+  displayName?: string;
   email: string;
   role: 'admin' | 'operator' | 'viewer';
   createdAt: string;
@@ -30,6 +31,7 @@ export interface Server {
   groupId?: string;
   group?: ServerGroup;
   lastHeartbeat?: string;
+  lastSeen?: string;
   uptime?: number;
   tags?: string[];
   createdAt: string;
@@ -137,6 +139,7 @@ export interface ServerGroup {
   name: string;
   description?: string;
   color?: string;
+  serverIds?: string[];
   serverCount: number;
   createdAt: string;
 }
@@ -183,19 +186,20 @@ export interface SmtpSettings {
 
 export interface WebhookConfig {
   id: string;
+  name: string;
   url: string;
-  label: string;
   events: string[];
-  isActive: boolean;
+  enabled: boolean;
   lastTriggered?: string;
 }
 
 export interface GeneralSettings {
-  appName: string;
-  dataRetention: '7d' | '30d' | '90d' | '1y';
-  heartbeatTimeout: number;
-  defaultView: 'grid' | 'list';
+  siteName: string;
+  heartbeatInterval: number;
+  retentionDays: number;
   timezone: string;
+  dashboardRefreshRate: number;
+  language: string;
 }
 
 export interface DashboardStats {

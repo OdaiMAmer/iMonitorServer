@@ -1,37 +1,46 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Mail, Send, CheckCircle, AlertTriangle, Loader2, Save } from 'lucide-react';
 import { toast } from '../stores/useToastStore';
+import { settingsApi } from '../lib/api';
+import type { SmtpSettings } from '../types';
 
-interface SMTPConfig {
-  host: string;
-  port: number;
-  username: string;
-  password: string;
-  fromAddress: string;
-  fromName: string;
-  encryption: 'none' | 'tls' | 'starttls';
-}
+const defaultConfig: SmtpSettings = {
+  host: '',
+  port: 587,
+  username: '',
+  password: '',
+  fromAddress: '',
+  fromName: 'iMonitorServer Alerts',
+  encryption: 'tls',
+};
 
 export default function SettingsSMTPPage() {
-  const [config, setConfig] = useState<SMTPConfig>({
-    host: 'smtp.idealsolutions.com',
-    port: 587,
-    username: 'alerts@idealsolutions.com',
-    password: '',
-    fromAddress: 'alerts@idealsolutions.com',
-    fromName: 'iMonitorServer Alerts',
-    encryption: 'tls',
-  });
+  const [config, setConfig] = useState<SmtpSettings>(defaultConfig);
+  const [loading, setLoading] = useState(true);
   const [testEmail, setTestEmail] = useState('');
   const [saving, setSaving] = useState(false);
   const [testStatus, setTestStatus] = useState<'idle' | 'sending' | 'success' | 'error'>('idle');
 
+  useEffect(() => {
+    const controller = new AbortController();
+    settingsApi.getSmtp(controller.signal)
+      .then(res => setConfig(prev => ({ ...prev, ...res.data })))
+      .catch(() => { if (!controller.signal.aborted) toast('error', 'Failed to load SMTP settings'); })
+      .finally(() => setLoading(false));
+    return () => controller.abort();
+  }, []);
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
-    await new Promise(r => setTimeout(r, 800));
-    setSaving(false);
-    toast('success', 'SMTP settings saved');
+    try {
+      await settingsApi.updateSmtp(config);
+      toast('success', 'SMTP settings saved');
+    } catch {
+      toast('error', 'Failed to save SMTP settings');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleTest = async () => {
@@ -40,14 +49,29 @@ export default function SettingsSMTPPage() {
       return;
     }
     setTestStatus('sending');
-    await new Promise(r => setTimeout(r, 1500));
-    setTestStatus('success');
-    toast('success', 'Test email sent');
-    setTimeout(() => setTestStatus('idle'), 3000);
+    try {
+      await settingsApi.testSmtp(testEmail);
+      setTestStatus('success');
+      toast('success', 'Test email sent');
+      setTimeout(() => setTestStatus('idle'), 3000);
+    } catch {
+      setTestStatus('error');
+      toast('error', 'Failed to send test email');
+      setTimeout(() => setTestStatus('idle'), 3000);
+    }
   };
 
-  const handleField = (key: keyof SMTPConfig, value: string | number) =>
+  const handleField = (key: keyof SmtpSettings, value: string | number) =>
     setConfig(prev => ({ ...prev, [key]: value }));
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-5 h-5 animate-spin text-text-tertiary" />
+        <span className="ml-2 text-sm text-text-secondary">Loading SMTP settings...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

@@ -1,25 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { UserPlus, Search, Trash2, Shield, Loader2 } from 'lucide-react';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { EmptyState } from '../components/ui/EmptyState';
 import { cn } from '../lib/utils';
 import { toast } from '../stores/useToastStore';
-
-interface User {
-  id: string;
-  name: string;
-  email: string;
-  role: 'admin' | 'operator' | 'viewer';
-  lastActive: string;
-  isActive: boolean;
-}
-
-const mockUsers: User[] = [
-  { id: '1', name: 'Odai Amer', email: 'odai@idealsolutions.com', role: 'admin', lastActive: '2 min ago', isActive: true },
-  { id: '2', name: 'Ahmed Hassan', email: 'ahmed@idealsolutions.com', role: 'operator', lastActive: '1 hour ago', isActive: true },
-  { id: '3', name: 'Sara Ali', email: 'sara@idealsolutions.com', role: 'viewer', lastActive: '3 days ago', isActive: false },
-  { id: '4', name: 'Mohammed Khalil', email: 'mohammed@idealsolutions.com', role: 'operator', lastActive: '15 min ago', isActive: true },
-];
+import { usersApi } from '../lib/api';
+import type { User } from '../types';
 
 const roleColors: Record<string, string> = {
   admin: 'bg-status-maintenance/10 text-status-maintenance border-status-maintenance/20',
@@ -28,46 +14,67 @@ const roleColors: Record<string, string> = {
 };
 
 export default function SettingsUsersPage() {
-  const [users, setUsers] = useState<User[]>(mockUsers);
+  const [users, setUsers] = useState<User[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
-  const [newUser, setNewUser] = useState({ name: '', email: '', password: '', role: 'viewer' as User['role'] });
+  const [newUser, setNewUser] = useState({ name: '', email: '', password: '', role: 'viewer' as 'admin' | 'operator' | 'viewer' });
   const [saving, setSaving] = useState(false);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    usersApi.list(controller.signal)
+      .then(res => setUsers(res.data))
+      .catch(() => { if (!controller.signal.aborted) toast('error', 'Failed to load users'); })
+      .finally(() => setLoading(false));
+    return () => controller.abort();
+  }, []);
+
   const filtered = users.filter(u =>
-    u.name.toLowerCase().includes(search.toLowerCase()) ||
+    (u.displayName || '').toLowerCase().includes(search.toLowerCase()) ||
     u.email.toLowerCase().includes(search.toLowerCase())
   );
 
   const handleCreate = async () => {
-    if (!newUser.name.trim() || !newUser.email.trim()) {
+    if (!newUser.name.trim() || !newUser.email.trim() || !newUser.password.trim()) {
       toast('warning', 'Please fill in all required fields');
       return;
     }
     setSaving(true);
-    await new Promise(r => setTimeout(r, 500));
-    const created: User = {
-      id: String(Date.now()),
-      name: newUser.name,
-      email: newUser.email,
-      role: newUser.role,
-      lastActive: 'Never',
-      isActive: true,
-    };
-    setUsers(prev => [...prev, created]);
-    setNewUser({ name: '', email: '', password: '', role: 'viewer' });
-    setShowAdd(false);
-    setSaving(false);
-    toast('success', 'User created');
+    try {
+      const res = await usersApi.create({ displayName: newUser.name, email: newUser.email, password: newUser.password, role: newUser.role } as any);
+      setUsers(prev => [...prev, res.data]);
+      setNewUser({ name: '', email: '', password: '', role: 'viewer' });
+      setShowAdd(false);
+      toast('success', 'User created');
+    } catch {
+      toast('error', 'Failed to create user');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!deleteTarget) return;
-    setUsers(prev => prev.filter(u => u.id !== deleteTarget.id));
-    setDeleteTarget(null);
-    toast('success', 'User deactivated');
+    try {
+      await usersApi.delete(deleteTarget.id);
+      setUsers(prev => prev.filter(u => u.id !== deleteTarget.id));
+      setDeleteTarget(null);
+      toast('success', 'User deactivated');
+    } catch {
+      toast('error', 'Failed to deactivate user');
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-5 h-5 animate-spin text-text-tertiary" />
+        <span className="ml-2 text-sm text-text-secondary">Loading users...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -113,7 +120,7 @@ export default function SettingsUsersPage() {
           />
           <select
             value={newUser.role}
-            onChange={(e) => setNewUser(u => ({ ...u, role: e.target.value as User['role'] }))}
+            onChange={(e) => setNewUser(u => ({ ...u, role: e.target.value as 'admin' | 'operator' | 'viewer' }))}
             className="px-4 py-2.5 bg-bg-surface-raised border border-border-default rounded-lg text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/50"
           >
             <option value="viewer">Viewer</option>
@@ -160,7 +167,6 @@ export default function SettingsUsersPage() {
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-text-secondary">Name</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-text-secondary">Email</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-text-secondary">Role</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-text-secondary">Last Active</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-text-secondary">Status</th>
                 <th className="px-4 py-3 w-12" />
               </tr>
@@ -168,21 +174,17 @@ export default function SettingsUsersPage() {
             <tbody className="divide-y divide-border-subtle">
               {filtered.map(user => (
                 <tr key={user.id} className="hover:bg-bg-surface-raised/30 transition-colors">
-                  <td className="px-4 py-3 text-sm font-medium text-text-primary">{user.name}</td>
+                  <td className="px-4 py-3 text-sm font-medium text-text-primary">{user.displayName || user.email}</td>
                   <td className="px-4 py-3 text-sm text-text-secondary">{user.email}</td>
                   <td className="px-4 py-3">
-                    <span className={cn('px-2 py-0.5 text-xs font-medium rounded-full border capitalize', roleColors[user.role])}>
+                    <span className={cn('px-2 py-0.5 text-xs font-medium rounded-full border capitalize', roleColors[user.role] || roleColors.viewer)}>
                       {user.role}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-sm text-text-tertiary">{user.lastActive}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
-                      <span className={cn(
-                        'w-2 h-2 rounded-full',
-                        user.isActive ? 'bg-status-healthy' : 'bg-text-tertiary',
-                      )} />
-                      <span className="text-sm text-text-secondary">{user.isActive ? 'Active' : 'Inactive'}</span>
+                      <span className="w-2 h-2 rounded-full bg-status-healthy" />
+                      <span className="text-sm text-text-secondary">Active</span>
                     </div>
                   </td>
                   <td className="px-4 py-3">
@@ -205,7 +207,7 @@ export default function SettingsUsersPage() {
         onClose={() => setDeleteTarget(null)}
         onConfirm={handleDelete}
         title="Deactivate User"
-        message={`Deactivate "${deleteTarget?.name}"? They will no longer be able to sign in.`}
+        message={`Deactivate "${deleteTarget?.displayName || deleteTarget?.email}"? They will no longer be able to sign in.`}
         confirmLabel="Deactivate"
         destructive
       />

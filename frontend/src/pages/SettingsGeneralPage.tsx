@@ -1,15 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Save, Loader2, Globe, Database, Clock, LayoutGrid } from 'lucide-react';
-import { cn } from '../lib/utils';
-import { toast } from '../stores/useToastStore';
 
-interface GeneralSettings {
-  appName: string;
-  dataRetention: '7d' | '30d' | '90d' | '1y';
-  heartbeatTimeout: number;
-  defaultView: 'grid' | 'list';
-  timezone: string;
-}
+import { toast } from '../stores/useToastStore';
+import { settingsApi } from '../lib/api';
+import type { GeneralSettings } from '../types';
 
 const timezones = [
   'UTC',
@@ -27,23 +21,50 @@ const timezones = [
   'Australia/Sydney',
 ];
 
+const defaultSettings: GeneralSettings = {
+  siteName: 'iMonitorServer',
+  heartbeatInterval: 30,
+  retentionDays: 90,
+  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  dashboardRefreshRate: 5,
+  language: 'en',
+};
+
 export default function SettingsGeneralPage() {
-  const [form, setForm] = useState<GeneralSettings>({
-    appName: 'iMonitorServer',
-    dataRetention: '30d',
-    heartbeatTimeout: 120,
-    defaultView: 'grid',
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-  });
+  const [form, setForm] = useState<GeneralSettings>(defaultSettings);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    settingsApi.getGeneral(controller.signal)
+      .then(res => setForm(prev => ({ ...prev, ...res.data })))
+      .catch(() => { if (!controller.signal.aborted) toast('error', 'Failed to load settings'); })
+      .finally(() => setLoading(false));
+    return () => controller.abort();
+  }, []);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
-    await new Promise(r => setTimeout(r, 600));
-    setSaving(false);
-    toast('success', 'Settings saved');
+    try {
+      await settingsApi.updateGeneral(form);
+      toast('success', 'Settings saved');
+    } catch {
+      toast('error', 'Failed to save settings');
+    } finally {
+      setSaving(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-5 h-5 animate-spin text-text-tertiary" />
+        <span className="ml-2 text-sm text-text-secondary">Loading settings...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -58,8 +79,8 @@ export default function SettingsGeneralPage() {
             <label className="block text-sm font-medium text-text-secondary mb-1.5">Application Name</label>
             <input
               type="text"
-              value={form.appName}
-              onChange={(e) => setForm(f => ({ ...f, appName: e.target.value }))}
+              value={form.siteName}
+              onChange={(e) => setForm(f => ({ ...f, siteName: e.target.value }))}
               className="w-full px-4 py-2.5 bg-bg-surface-raised border border-border-default rounded-lg text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/50"
             />
             <p className="text-xs text-text-tertiary mt-1">Displayed in the sidebar and browser title</p>
@@ -69,60 +90,49 @@ export default function SettingsGeneralPage() {
             <div>
               <label className="flex items-center gap-2 text-sm font-medium text-text-secondary mb-1.5">
                 <Database className="w-4 h-4" />
-                Data Retention
+                Data Retention (days)
               </label>
-              <select
-                value={form.dataRetention}
-                onChange={(e) => setForm(f => ({ ...f, dataRetention: e.target.value as GeneralSettings['dataRetention'] }))}
+              <input
+                type="number"
+                value={form.retentionDays}
+                onChange={(e) => setForm(f => ({ ...f, retentionDays: Number(e.target.value) }))}
+                min={7}
+                max={365}
                 className="w-full px-4 py-2.5 bg-bg-surface-raised border border-border-default rounded-lg text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/50"
-              >
-                <option value="7d">7 Days</option>
-                <option value="30d">30 Days</option>
-                <option value="90d">90 Days</option>
-                <option value="1y">1 Year</option>
-              </select>
+              />
               <p className="text-xs text-text-tertiary mt-1">How long to keep metrics history</p>
             </div>
 
             <div>
               <label className="flex items-center gap-2 text-sm font-medium text-text-secondary mb-1.5">
                 <Clock className="w-4 h-4" />
-                Heartbeat Timeout (sec)
+                Heartbeat Interval (sec)
               </label>
               <input
                 type="number"
-                value={form.heartbeatTimeout}
-                onChange={(e) => setForm(f => ({ ...f, heartbeatTimeout: Number(e.target.value) }))}
-                min={30}
-                max={600}
+                value={form.heartbeatInterval}
+                onChange={(e) => setForm(f => ({ ...f, heartbeatInterval: Number(e.target.value) }))}
+                min={5}
+                max={300}
                 className="w-full px-4 py-2.5 bg-bg-surface-raised border border-border-default rounded-lg text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/50"
               />
-              <p className="text-xs text-text-tertiary mt-1">Mark server offline after this many seconds without heartbeat</p>
+              <p className="text-xs text-text-tertiary mt-1">How often agents report back</p>
             </div>
           </div>
 
           <div>
             <label className="flex items-center gap-2 text-sm font-medium text-text-secondary mb-1.5">
               <LayoutGrid className="w-4 h-4" />
-              Default Dashboard View
+              Dashboard Refresh Rate (sec)
             </label>
-            <div className="flex gap-2">
-              {(['grid', 'list'] as const).map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => setForm(f => ({ ...f, defaultView: v }))}
-                  className={cn(
-                    'px-4 py-2 text-sm font-medium rounded-lg capitalize transition-colors border',
-                    form.defaultView === v
-                      ? 'bg-primary/20 text-primary border-primary/30'
-                      : 'bg-bg-surface-raised text-text-secondary border-border-default hover:text-text-primary',
-                  )}
-                >
-                  {v}
-                </button>
-              ))}
-            </div>
+            <input
+              type="number"
+              value={form.dashboardRefreshRate}
+              onChange={(e) => setForm(f => ({ ...f, dashboardRefreshRate: Number(e.target.value) }))}
+              min={1}
+              max={60}
+              className="w-full max-w-xs px-4 py-2.5 bg-bg-surface-raised border border-border-default rounded-lg text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/50"
+            />
           </div>
 
           <div>

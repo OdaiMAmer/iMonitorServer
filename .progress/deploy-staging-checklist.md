@@ -1,5 +1,6 @@
 # deploy-staging — Progress Checklist
-Last updated: 2026-03-25T13:05:18.890Z
+Last updated: 2026-03-25T18:58:45.592Z
 
 ## Deployment (staging)
-- [ ] No deployment initiated
+- [x] Deployment status: running
+- [x] URL: http://localhost:8098

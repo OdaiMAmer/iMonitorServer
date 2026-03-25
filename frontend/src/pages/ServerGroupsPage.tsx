@@ -1,71 +1,73 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Plus, Server, Pencil, Trash2, FolderOpen, Search,
+  Plus, Server, Pencil, Trash2, FolderOpen, Search, Loader2,
 } from 'lucide-react';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { EmptyState } from '../components/ui/EmptyState';
 import { toast } from '../stores/useToastStore';
-
-interface ServerGroup {
-  id: string;
-  name: string;
-  description: string;
-  serverCount: number;
-  color: string;
-  healthyCount: number;
-  warningCount: number;
-  criticalCount: number;
-}
-
-const mockGroups: ServerGroup[] = [
-  { id: '1', name: 'Production', description: 'Production environment servers', serverCount: 12, color: '#EF4444', healthyCount: 9, warningCount: 2, criticalCount: 1 },
-  { id: '2', name: 'Staging', description: 'Staging and QA environment', serverCount: 6, color: '#F59E0B', healthyCount: 5, warningCount: 1, criticalCount: 0 },
-  { id: '3', name: 'Development', description: 'Development servers', serverCount: 4, color: '#22C55E', healthyCount: 4, warningCount: 0, criticalCount: 0 },
-  { id: '4', name: 'Database Cluster', description: 'PostgreSQL and Redis nodes', serverCount: 3, color: '#3B82F6', healthyCount: 3, warningCount: 0, criticalCount: 0 },
-  { id: '5', name: 'CDN Edge Nodes', description: 'Content delivery edge servers', serverCount: 8, color: '#8B5CF6', healthyCount: 7, warningCount: 1, criticalCount: 0 },
-];
+import { groupsApi } from '../lib/api';
+import type { ServerGroup } from '../types';
 
 export default function ServerGroupsPage() {
   const navigate = useNavigate();
-  const [groups, setGroups] = useState<ServerGroup[]>(mockGroups);
+  const [groups, setGroups] = useState<ServerGroup[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ServerGroup | null>(null);
   const [newGroup, setNewGroup] = useState({ name: '', description: '', color: '#38BDF8' });
 
+  useEffect(() => {
+    const controller = new AbortController();
+    groupsApi.list(controller.signal)
+      .then(res => setGroups(res.data))
+      .catch(() => { if (!controller.signal.aborted) toast('error', 'Failed to load groups'); })
+      .finally(() => setLoading(false));
+    return () => controller.abort();
+  }, []);
+
   const filtered = groups.filter(g =>
     g.name.toLowerCase().includes(search.toLowerCase()) ||
-    g.description.toLowerCase().includes(search.toLowerCase())
+    (g.description || '').toLowerCase().includes(search.toLowerCase())
   );
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     if (!newGroup.name.trim()) {
       toast('warning', 'Please enter a group name');
       return;
     }
-    const created: ServerGroup = {
-      id: String(Date.now()),
-      name: newGroup.name,
-      description: newGroup.description,
-      color: newGroup.color,
-      serverCount: 0,
-      healthyCount: 0,
-      warningCount: 0,
-      criticalCount: 0,
-    };
-    setGroups(prev => [...prev, created]);
-    setNewGroup({ name: '', description: '', color: '#38BDF8' });
-    setShowAdd(false);
-    toast('success', 'Group created');
+    try {
+      const res = await groupsApi.create(newGroup);
+      setGroups(prev => [...prev, res.data]);
+      setNewGroup({ name: '', description: '', color: '#38BDF8' });
+      setShowAdd(false);
+      toast('success', 'Group created');
+    } catch {
+      toast('error', 'Failed to create group');
+    }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!deleteTarget) return;
-    setGroups(prev => prev.filter(g => g.id !== deleteTarget.id));
-    setDeleteTarget(null);
-    toast('success', 'Group deleted');
+    try {
+      await groupsApi.delete(deleteTarget.id);
+      setGroups(prev => prev.filter(g => g.id !== deleteTarget.id));
+      setDeleteTarget(null);
+      toast('success', 'Group deleted');
+    } catch {
+      toast('error', 'Failed to delete group');
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-5 h-5 animate-spin text-text-tertiary" />
+        <span className="ml-2 text-sm text-text-secondary">Loading groups...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -163,7 +165,7 @@ export default function ServerGroupsPage() {
             <div key={group.id} className="glass-card p-5 transition-all hover:scale-[1.02]">
               <div className="flex items-start justify-between mb-3">
                 <div className="flex items-center gap-3">
-                  <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: group.color }} />
+                  <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: group.color || '#38BDF8' }} />
                   <h3 className="text-sm font-semibold text-text-primary">{group.name}</h3>
                 </div>
                 <div className="flex items-center gap-1">
@@ -183,25 +185,7 @@ export default function ServerGroupsPage() {
 
               <div className="flex items-center gap-2 text-sm text-text-secondary mb-3">
                 <Server className="w-4 h-4 text-primary" />
-                <span>{group.serverCount} servers</span>
-              </div>
-
-              <div className="flex gap-2 text-[10px] font-medium">
-                {group.healthyCount > 0 && (
-                  <span className="px-1.5 py-0.5 rounded bg-status-healthy/10 text-status-healthy">
-                    {group.healthyCount} healthy
-                  </span>
-                )}
-                {group.warningCount > 0 && (
-                  <span className="px-1.5 py-0.5 rounded bg-status-warning/10 text-status-warning">
-                    {group.warningCount} warning
-                  </span>
-                )}
-                {group.criticalCount > 0 && (
-                  <span className="px-1.5 py-0.5 rounded bg-status-critical/10 text-status-critical">
-                    {group.criticalCount} critical
-                  </span>
-                )}
+                <span>{group.serverIds?.length || 0} servers</span>
               </div>
 
               <button

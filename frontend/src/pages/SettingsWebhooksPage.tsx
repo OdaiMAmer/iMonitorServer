@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Plus, Webhook, Trash2, CheckCircle, XCircle, Loader2,
 } from 'lucide-react';
@@ -6,22 +6,8 @@ import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { EmptyState } from '../components/ui/EmptyState';
 import { cn } from '../lib/utils';
 import { toast } from '../stores/useToastStore';
-
-interface WebhookConfig {
-  id: string;
-  name: string;
-  url: string;
-  events: string[];
-  enabled: boolean;
-  lastTriggered: string | null;
-  status: 'active' | 'failing';
-}
-
-const mockWebhooks: WebhookConfig[] = [
-  { id: '1', name: 'Slack Alerts', url: 'https://hooks.slack.com/services/T00/B00/xxx', events: ['server.down', 'cpu.critical'], enabled: true, lastTriggered: '5 min ago', status: 'active' },
-  { id: '2', name: 'PagerDuty', url: 'https://events.pagerduty.com/v2/enqueue', events: ['server.down'], enabled: true, lastTriggered: '2 hours ago', status: 'active' },
-  { id: '3', name: 'Teams Channel', url: 'https://outlook.office.com/webhook/xxx', events: ['server.down', 'disk.warning'], enabled: false, lastTriggered: null, status: 'failing' },
-];
+import { settingsApi } from '../lib/api';
+import type { WebhookConfig } from '../types';
 
 const availableEvents = [
   'server.down', 'server.up', 'cpu.critical', 'cpu.warning',
@@ -29,44 +15,60 @@ const availableEvents = [
 ];
 
 export default function SettingsWebhooksPage() {
-  const [webhooks, setWebhooks] = useState<WebhookConfig[]>(mockWebhooks);
+  const [webhooks, setWebhooks] = useState<WebhookConfig[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<WebhookConfig | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
   const [newWebhook, setNewWebhook] = useState({ name: '', url: '', events: ['server.down'] as string[] });
 
-  const handleCreate = () => {
+  useEffect(() => {
+    const controller = new AbortController();
+    settingsApi.getWebhooks(controller.signal)
+      .then(res => setWebhooks(res.data))
+      .catch(() => { if (!controller.signal.aborted) toast('error', 'Failed to load webhooks'); })
+      .finally(() => setLoading(false));
+    return () => controller.abort();
+  }, []);
+
+  const handleCreate = async () => {
     if (!newWebhook.name.trim() || !newWebhook.url.trim()) {
       toast('warning', 'Please fill in all fields');
       return;
     }
-    const created: WebhookConfig = {
-      id: String(Date.now()),
-      name: newWebhook.name,
-      url: newWebhook.url,
-      events: newWebhook.events,
-      enabled: true,
-      lastTriggered: null,
-      status: 'active',
-    };
-    setWebhooks(prev => [...prev, created]);
-    setNewWebhook({ name: '', url: '', events: ['server.down'] });
-    setShowAdd(false);
-    toast('success', 'Webhook created');
+    try {
+      const res = await settingsApi.createWebhook(newWebhook);
+      setWebhooks(prev => [...prev, res.data]);
+      setNewWebhook({ name: '', url: '', events: ['server.down'] });
+      setShowAdd(false);
+      toast('success', 'Webhook created');
+    } catch {
+      toast('error', 'Failed to create webhook');
+    }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!deleteTarget) return;
-    setWebhooks(prev => prev.filter(w => w.id !== deleteTarget.id));
-    setDeleteTarget(null);
-    toast('success', 'Webhook deleted');
+    try {
+      await settingsApi.deleteWebhook(deleteTarget.id);
+      setWebhooks(prev => prev.filter(w => w.id !== deleteTarget.id));
+      setDeleteTarget(null);
+      toast('success', 'Webhook deleted');
+    } catch {
+      toast('error', 'Failed to delete webhook');
+    }
   };
 
   const handleTest = async (id: string) => {
     setTesting(id);
-    await new Promise(r => setTimeout(r, 1000));
-    setTesting(null);
-    toast('success', 'Webhook test sent');
+    try {
+      await settingsApi.testWebhook(id);
+      toast('success', 'Webhook test sent');
+    } catch {
+      toast('error', 'Webhook test failed');
+    } finally {
+      setTesting(null);
+    }
   };
 
   const toggleEvent = (event: string) => {
@@ -78,11 +80,25 @@ export default function SettingsWebhooksPage() {
     }));
   };
 
-  const toggleEnabled = (id: string) => {
-    setWebhooks(prev => prev.map(w =>
-      w.id === id ? { ...w, enabled: !w.enabled } : w
-    ));
+  const toggleEnabled = async (id: string) => {
+    const wh = webhooks.find(w => w.id === id);
+    if (!wh) return;
+    try {
+      await settingsApi.updateWebhook(id, { enabled: !wh.enabled } as any);
+      setWebhooks(prev => prev.map(w => w.id === id ? { ...w, enabled: !w.enabled } : w));
+    } catch {
+      toast('error', 'Failed to update webhook');
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-5 h-5 animate-spin text-text-tertiary" />
+        <span className="ml-2 text-sm text-text-secondary">Loading webhooks...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -180,7 +196,7 @@ export default function SettingsWebhooksPage() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 mb-0.5">
                       <h4 className="text-sm font-medium text-text-primary">{wh.name}</h4>
-                      {wh.status === 'active' ? (
+                      {wh.enabled ? (
                         <CheckCircle className="w-3.5 h-3.5 text-status-healthy" />
                       ) : (
                         <XCircle className="w-3.5 h-3.5 text-status-critical" />
@@ -193,7 +209,7 @@ export default function SettingsWebhooksPage() {
                     </div>
                     <p className="text-xs text-text-tertiary font-mono truncate">{wh.url}</p>
                     <div className="flex flex-wrap gap-1 mt-2">
-                      {wh.events.map(ev => (
+                      {(wh.events || []).map(ev => (
                         <span key={ev} className="px-1.5 py-0.5 bg-bg-surface-raised rounded text-[10px] text-text-tertiary">
                           {ev}
                         </span>
@@ -202,9 +218,6 @@ export default function SettingsWebhooksPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 ml-4 flex-shrink-0">
-                  {wh.lastTriggered && (
-                    <span className="text-xs text-text-tertiary whitespace-nowrap">Last: {wh.lastTriggered}</span>
-                  )}
                   <button
                     onClick={() => toggleEnabled(wh.id)}
                     className={cn(

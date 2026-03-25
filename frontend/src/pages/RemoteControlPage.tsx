@@ -1,7 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Terminal, ArrowLeft, Power, MonitorOff, Trash2 } from 'lucide-react';
+import { Terminal, ArrowLeft, Power, RefreshCw, MonitorOff, Trash2, Loader2 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { toast } from '../stores/useToastStore';
+import { serversApi } from '../lib/api';
+import type { Server } from '../types';
 
 interface TerminalLine {
   type: 'input' | 'output' | 'system' | 'error';
@@ -9,28 +12,29 @@ interface TerminalLine {
   timestamp: string;
 }
 
-const mockResponses: Record<string, string> = {
-  'hostname': 'PROD-WEB-01',
-  'whoami': 'administrator',
-  'date': new Date().toString(),
-  'ipconfig': 'IPv4 Address: 192.168.1.100\nSubnet Mask: 255.255.255.0\nDefault Gateway: 192.168.1.1',
-  'systeminfo': 'OS Name: Microsoft Windows Server 2022\nOS Version: 10.0.20348\nSystem Type: x64-based PC\nTotal Physical Memory: 32,768 MB\nAvailable Physical Memory: 18,432 MB',
-  'tasklist': 'Image Name          PID   Mem Usage\n============  ======  =========\nSystem            4     0 K\ncsrss.exe       624   5,120 K\nsvchost.exe     892  28,672 K\nw3wp.exe       4521  256,000 K\nsqlservr.exe   3892  1,024,000 K',
-  'dir': 'Volume in drive C has no label.\n Directory of C:\\\n\n03/15/2026  Program Files\n03/15/2026  Program Files (x86)\n03/20/2026  Users\n03/25/2026  Windows\n03/25/2026  inetpub',
-  'cls': '',
-  'help': 'Available commands: hostname, whoami, date, ipconfig, systeminfo, tasklist, dir, cls, help',
-};
-
 export default function RemoteControlPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [server, setServer] = useState<Server | null>(null);
+  const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState(false);
   const [lines, setLines] = useState<TerminalLine[]>([]);
   const [command, setCommand] = useState('');
   const [commandHistory, setCommandHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!id) return;
+    const controller = new AbortController();
+    serversApi.getById(id, controller.signal)
+      .then(res => setServer(res.data))
+      .catch(() => { if (!controller.signal.aborted) toast('error', 'Failed to load server'); })
+      .finally(() => setLoading(false));
+    return () => controller.abort();
+  }, [id]);
 
   useEffect(() => {
     if (terminalRef.current) {
@@ -44,13 +48,8 @@ export default function RemoteControlPage() {
 
   const handleConnect = () => {
     setConnected(true);
-    setLines([]);
-    addLine('system', `Connecting to server ${id}...`);
-    setTimeout(() => {
-      addLine('system', 'Connection established. Type "help" for available commands.');
-      addLine('system', '---');
-      inputRef.current?.focus();
-    }, 500);
+    addLine('system', `Connecting to ${server?.hostname || id}...`);
+    addLine('system', `Session established. Type "help" for available commands.`);
   };
 
   const handleDisconnect = () => {
@@ -58,7 +57,7 @@ export default function RemoteControlPage() {
     setConnected(false);
   };
 
-  const handleCommand = (e: React.FormEvent) => {
+  const handleCommand = async (e: React.FormEvent) => {
     e.preventDefault();
     const cmd = command.trim();
     if (!cmd) return;
@@ -66,19 +65,72 @@ export default function RemoteControlPage() {
     addLine('input', `$ ${cmd}`);
     setCommandHistory(prev => [...prev, cmd]);
     setHistoryIndex(-1);
+    setCommand('');
 
     if (cmd === 'cls' || cmd === 'clear') {
       setLines([]);
-    } else {
-      const response = mockResponses[cmd.toLowerCase()];
-      if (response !== undefined) {
-        if (response) addLine('output', response);
-      } else {
-        addLine('error', `'${cmd}' is not recognized. Type "help" for available commands.`);
-      }
+      return;
     }
 
-    setCommand('');
+    if (cmd === 'help') {
+      addLine('output', 'Available commands:\n  info       - Show server details\n  processes  - List running processes\n  services   - List system services\n  hardware   - Show hardware info\n  network    - Show network info\n  restart    - Restart the server (requires confirmation)\n  shutdown   - Shut down the server (requires confirmation)\n  clear/cls  - Clear terminal\n  help       - Show this message');
+      return;
+    }
+
+    if (!id) return;
+
+    try {
+      if (cmd === 'info') {
+        const res = await serversApi.getById(id);
+        const s = res.data;
+        addLine('output', `Hostname: ${s.hostname}\nIP: ${s.ipAddress}\nOS: ${s.os || 'N/A'}\nStatus: ${s.status}\nUptime: ${s.uptime || 'N/A'}\nLast seen: ${s.lastSeen || 'N/A'}`);
+      } else if (cmd === 'processes') {
+        const res = await serversApi.getProcesses(id);
+        const procs = res.data;
+        if (procs.length === 0) {
+          addLine('output', 'No process data available.');
+        } else {
+          const header = 'PID       Name                 CPU%   Memory';
+          const rows = procs.slice(0, 20).map(p =>
+            `${String(p.pid).padEnd(10)}${(p.name || '').padEnd(21)}${String(p.cpuPercent ?? 0).padEnd(7)}${p.memoryMB ?? 0} MB`
+          );
+          addLine('output', `${header}\n${rows.join('\n')}${procs.length > 20 ? `\n... and ${procs.length - 20} more` : ''}`);
+        }
+      } else if (cmd === 'services') {
+        const res = await serversApi.getServices(id);
+        const svcs = res.data;
+        if (svcs.length === 0) {
+          addLine('output', 'No service data available.');
+        } else {
+          const rows = svcs.slice(0, 20).map(s =>
+            `${(s.name || '').padEnd(30)} ${(s.status || '').padEnd(12)} ${s.startupType || ''}`
+          );
+          addLine('output', rows.join('\n'));
+        }
+      } else if (cmd === 'hardware') {
+        const res = await serversApi.getHardware(id);
+        const hw = res.data;
+        addLine('output', JSON.stringify(hw, null, 2));
+      } else if (cmd === 'network') {
+        const res = await serversApi.getNetwork(id);
+        const net = res.data;
+        addLine('output', JSON.stringify(net, null, 2));
+      } else if (cmd === 'restart') {
+        addLine('system', 'Sending restart command...');
+        await serversApi.restart(id);
+        addLine('output', 'Restart command sent successfully.');
+        toast('success', 'Server restart initiated');
+      } else if (cmd === 'shutdown') {
+        addLine('system', 'Sending shutdown command...');
+        await serversApi.shutdown(id);
+        addLine('output', 'Shutdown command sent successfully.');
+        toast('success', 'Server shutdown initiated');
+      } else {
+        addLine('error', `Unknown command: "${cmd}". Type "help" for available commands.`);
+      }
+    } catch (err: any) {
+      addLine('error', `Error: ${err?.response?.data?.message || err.message || 'Command failed'}`);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -102,18 +154,49 @@ export default function RemoteControlPage() {
     }
   };
 
+  const handleRemoteAction = async (action: 'restart' | 'shutdown') => {
+    if (!id) return;
+    setActionLoading(action);
+    try {
+      if (action === 'restart') {
+        await serversApi.restart(id);
+        toast('success', 'Server restart initiated');
+        addLine('system', 'Restart command sent via button.');
+      } else {
+        await serversApi.shutdown(id);
+        toast('success', 'Server shutdown initiated');
+        addLine('system', 'Shutdown command sent via button.');
+      }
+    } catch (err: any) {
+      toast('error', err?.response?.data?.message || `Failed to ${action} server`);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-5 h-5 animate-spin text-text-tertiary" />
+        <span className="ml-2 text-sm text-text-secondary">Loading server...</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-4">
+    <div className="space-y-4">
+      <div className="flex items-center gap-3 mb-2">
         <button
-          onClick={() => navigate(`/servers/${id}`)}
-          className="p-2 rounded-lg hover:bg-bg-surface-raised transition-colors text-text-secondary"
+          onClick={() => navigate(-1)}
+          className="p-2 text-text-secondary hover:text-text-primary transition-colors"
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div>
-          <h1 className="text-2xl font-bold text-text-primary">Remote Control</h1>
-          <p className="text-sm text-text-secondary mt-0.5">Server {id} - Remote Terminal Session</p>
+          <h1 className="text-xl font-bold text-text-primary">Remote Control</h1>
+          <p className="text-xs text-text-secondary">
+            {server?.hostname || id} — {server?.ipAddress || 'Unknown IP'}
+          </p>
         </div>
       </div>
 
@@ -136,9 +219,25 @@ export default function RemoteControlPage() {
           </button>
         )}
         <button
+          onClick={() => handleRemoteAction('restart')}
+          disabled={!!actionLoading}
+          className="flex items-center gap-2 px-3 py-2 bg-status-warning/10 text-status-warning border border-status-warning/20 rounded-lg text-sm font-medium hover:bg-status-warning/20 disabled:opacity-50 transition-colors"
+        >
+          {actionLoading === 'restart' ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+          Restart
+        </button>
+        <button
+          onClick={() => handleRemoteAction('shutdown')}
+          disabled={!!actionLoading}
+          className="flex items-center gap-2 px-3 py-2 bg-status-critical/10 text-status-critical border border-status-critical/20 rounded-lg text-sm font-medium hover:bg-status-critical/20 disabled:opacity-50 transition-colors"
+        >
+          {actionLoading === 'shutdown' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Power className="w-4 h-4" />}
+          Shutdown
+        </button>
+        <button
           onClick={() => setLines([])}
           disabled={!connected}
-          className="flex items-center gap-2 px-4 py-2 bg-bg-surface-raised border border-border-default text-text-secondary rounded-lg text-sm font-medium hover:text-text-primary disabled:opacity-40 transition-colors"
+          className="flex items-center gap-2 px-3 py-2 bg-bg-surface-raised border border-border-default text-text-secondary rounded-lg text-sm font-medium hover:text-text-primary disabled:opacity-40 transition-colors"
         >
           <Trash2 className="w-4 h-4" />
           Clear
@@ -159,7 +258,7 @@ export default function RemoteControlPage() {
           <Terminal className="w-4 h-4 text-text-tertiary" />
           <span className="text-xs font-medium text-text-secondary">Terminal</span>
           <span className="text-xs text-text-tertiary ml-auto font-mono">
-            {connected ? `session@server-${id}` : 'no active session'}
+            {connected ? `session@${server?.hostname || id}` : 'no active session'}
           </span>
         </div>
 

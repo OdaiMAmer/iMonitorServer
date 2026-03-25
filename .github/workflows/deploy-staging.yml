@@ -1,18 +1,17 @@
-name: Deploy to Staging
+name: CI/CD Pipeline
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 concurrency:
-  group: staging-deployment
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   NODE_VERSION: "20"
-  COMPOSE_FILE: docker-compose.staging.yml
-  ENV_FILE: .env.staging
 
 jobs:
   test-backend:
@@ -48,29 +47,28 @@ jobs:
           --health-retries 5
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: backend/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Generate Prisma client
         run: npx prisma generate
 
-      - name: Run database migrations
-        run: npx prisma migrate deploy
+      - name: Push schema to test DB
+        run: npx prisma db push --skip-generate
         env:
           DATABASE_URL: postgresql://imonitor_ci:ci_password@localhost:5432/imonitor_ci_db?schema=public
 
+      - name: TypeScript check
+        run: npx tsc --noEmit --project tsconfig.json
+
       - name: Run tests
-        run: npm test
+        run: npx vitest run --reporter=verbose
         env:
           NODE_ENV: test
           DATABASE_URL: postgresql://imonitor_ci:ci_password@localhost:5432/imonitor_ci_db?schema=public
@@ -86,63 +84,76 @@ jobs:
         working-directory: frontend
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
 
       - name: Run tests
-        run: npm test
+        run: npx vitest run --reporter=verbose
 
-  build-and-deploy:
-    name: Build & Deploy to Staging
+  build-images:
+    name: Build Docker Images
     runs-on: ubuntu-latest
     needs: [test-backend, test-frontend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Build Docker images
+      - name: Build backend image
+        run: docker build -t imonitor-backend:${{ github.sha }} ./backend
+
+      - name: Build frontend image
+        run: docker build -t imonitor-frontend:${{ github.sha }} ./frontend
+
+      - name: Verify images
         run: |
-          docker compose -f ${{ env.COMPOSE_FILE }} --env-file ${{ env.ENV_FILE }} build --no-cache
+          docker images | grep imonitor
+          echo "Images built successfully for commit ${{ github.sha }}"
 
-      - name: Validate Docker Compose config
+      - name: Docker Compose validation
+        run: docker compose -f docker-compose.yml config --quiet
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: self-hosted
+    needs: [build-images]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy with Docker Compose
         run: |
-          docker compose -f ${{ env.COMPOSE_FILE }} --env-file ${{ env.ENV_FILE }} config --quiet
+          docker compose -f docker-compose.staging.yml --env-file .env.staging -p imonitor-staging up -d --build
 
-      - name: Deploy to staging
+      - name: Wait for health checks
         run: |
-          chmod +x deploy-staging.sh
-          ./deploy-staging.sh up
-
-      - name: Verify deployment health
-        run: |
-          echo "Waiting for services to stabilize..."
-          sleep 30
-
-          echo "Checking frontend health..."
-          curl -f http://localhost:8098/health || exit 1
-
-          echo "Checking backend health..."
+          echo "Waiting for services..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3098/api/v1/health > /dev/null 2>&1; then
+              echo "Backend healthy after ${i}s"
+              break
+            fi
+            sleep 2
+          done
           curl -f http://localhost:3098/api/v1/health || exit 1
+          curl -f http://localhost:8098/ || exit 1
+          echo "All staging services healthy!"
 
-          echo "All staging services are healthy!"
-
-      - name: Show deployment status
+      - name: Show status
         if: always()
-        run: |
-          docker compose -f ${{ env.COMPOSE_FILE }} --env-file ${{ env.ENV_FILE }} -p imonitor-staging ps -a
+        run: docker compose -f docker-compose.staging.yml -p imonitor-staging ps -a
 
       - name: Collect logs on failure
         if: failure()
-        run: |
-          docker compose -f ${{ env.COMPOSE_FILE }} --env-file ${{ env.ENV_FILE }} -p imonitor-staging logs --tail=200
+        run: docker compose -f docker-compose.staging.yml -p imonitor-staging logs --tail=200

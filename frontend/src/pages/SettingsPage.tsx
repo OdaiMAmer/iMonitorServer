@@ -391,8 +391,8 @@ function GeneralTab() {
   });
 
   const [form, setForm] = useState<GeneralSettings>({
-    appName: 'iMonitorServer', dataRetention: '30d', heartbeatTimeout: 120,
-    defaultView: 'grid', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    siteName: 'iMonitorServer', heartbeatInterval: 30, retentionDays: 90,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, dashboardRefreshRate: 5, language: 'en',
   });
 
   useState(() => { if (settings) setForm(settings); });
@@ -409,39 +409,26 @@ function GeneralTab() {
     <div className="max-w-2xl">
       <form onSubmit={(e) => { e.preventDefault(); saveMutation.mutate(form); }} className="glass-card p-6 space-y-4">
         <div>
-          <label className="block text-sm font-medium text-text-secondary mb-1.5">Application Name</label>
-          <input type="text" value={form.appName} onChange={(e) => setForm((f) => ({ ...f, appName: e.target.value }))}
+          <label className="block text-sm font-medium text-text-secondary mb-1.5">Site Name</label>
+          <input type="text" value={form.siteName} onChange={(e) => setForm((f) => ({ ...f, siteName: e.target.value }))}
             className="w-full px-4 py-2.5 bg-bg-surface-raised border border-border-default rounded-lg text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/50" />
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1.5">Data Retention</label>
-            <select value={form.dataRetention} onChange={(e) => setForm((f) => ({ ...f, dataRetention: e.target.value as any }))}
-              className="w-full px-4 py-2.5 bg-bg-surface-raised border border-border-default rounded-lg text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/50">
-              <option value="7d">7 Days</option>
-              <option value="30d">30 Days</option>
-              <option value="90d">90 Days</option>
-              <option value="1y">1 Year</option>
-            </select>
+            <label className="block text-sm font-medium text-text-secondary mb-1.5">Data Retention (days)</label>
+            <input type="number" value={form.retentionDays} min={7} max={365} onChange={(e) => setForm((f) => ({ ...f, retentionDays: Number(e.target.value) }))}
+              className="w-full px-4 py-2.5 bg-bg-surface-raised border border-border-default rounded-lg text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/50" />
           </div>
           <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1.5">Heartbeat Timeout (sec)</label>
-            <input type="number" value={form.heartbeatTimeout} onChange={(e) => setForm((f) => ({ ...f, heartbeatTimeout: Number(e.target.value) }))}
+            <label className="block text-sm font-medium text-text-secondary mb-1.5">Heartbeat Interval (sec)</label>
+            <input type="number" value={form.heartbeatInterval} min={5} max={300} onChange={(e) => setForm((f) => ({ ...f, heartbeatInterval: Number(e.target.value) }))}
               className="w-full px-4 py-2.5 bg-bg-surface-raised border border-border-default rounded-lg text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/50" />
           </div>
         </div>
         <div>
-          <label className="block text-sm font-medium text-text-secondary mb-1.5">Default Dashboard View</label>
-          <div className="flex gap-2">
-            {(['grid', 'list'] as const).map((v) => (
-              <button key={v} type="button" onClick={() => setForm((f) => ({ ...f, defaultView: v }))}
-                className={`px-4 py-2 text-sm font-medium rounded-lg capitalize transition-colors border ${
-                  form.defaultView === v ? 'bg-primary/20 text-primary border-primary/30' : 'bg-bg-surface-raised text-text-secondary border-border-default'
-                }`}>
-                {v}
-              </button>
-            ))}
-          </div>
+          <label className="block text-sm font-medium text-text-secondary mb-1.5">Dashboard Refresh Rate (sec)</label>
+          <input type="number" value={form.dashboardRefreshRate} min={1} max={60} onChange={(e) => setForm((f) => ({ ...f, dashboardRefreshRate: Number(e.target.value) }))}
+            className="w-full max-w-xs px-4 py-2.5 bg-bg-surface-raised border border-border-default rounded-lg text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/50" />
         </div>
         <div className="flex justify-end pt-2">
           <button type="submit" disabled={saveMutation.isPending}

@@ -1,5 +1,5 @@
 # design — Progress Checklist
-Last updated: 2026-03-25T13:05:18.868Z
+Last updated: 2026-03-25T18:58:45.568Z
 
 ## Design Plan
 - [x] Design plan confirmed
@@ -18,3 +18,4 @@ Last updated: 2026-03-25T13:05:18.868Z
 - [x] SettingsUsers (claude_code)
 - [x] SettingsSMTP (claude_code)
 - [x] SettingsWebhooks (claude_code)
+- [x] SettingsGeneral (claude_code)
