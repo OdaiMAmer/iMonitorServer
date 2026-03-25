@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+    container_name: imonitor-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8099}:80"
+    depends_on:
+      - backend
+    networks:
+      - imonitor-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: imonitor-backend
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3099}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://imonitor:imonitor_password@postgres:5432/imonitor_db?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+      JWT_SECRET: "${JWT_SECRET:-iMonitorServer-super-secret-jwt-key-2026}"
+      JWT_ACCESS_EXPIRATION: 15m
+      JWT_REFRESH_EXPIRATION: 7d
+      CORS_ORIGIN: "${CORS_ORIGIN:-http://localhost:8099}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - imonitor-network
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: imonitor-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: imonitor_db
+      POSTGRES_USER: imonitor
+      POSTGRES_PASSWORD: imonitor_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5440}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U imonitor -d imonitor_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - imonitor-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: imonitor-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes ${REDIS_PASSWORD:+--requirepass $REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6390}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - imonitor-network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  imonitor-network:
+    driver: bridge

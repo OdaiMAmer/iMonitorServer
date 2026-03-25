@@ -1,0 +1,412 @@
+// ─── Datasource & Generator ──────────────────────────────────────────────────
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  OPERATOR
+  VIEWER
+}
+
+enum ServerStatus {
+  ONLINE
+  OFFLINE
+  DEGRADED
+  MAINTENANCE
+}
+
+enum AlertSeverity {
+  CRITICAL
+  WARNING
+  INFO
+}
+
+enum AlertStatus {
+  ACTIVE
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+enum MetricType {
+  CPU
+  MEMORY
+  DISK
+  NETWORK_IN
+  NETWORK_OUT
+}
+
+enum CommandType {
+  KILL_PROCESS
+  START_SERVICE
+  STOP_SERVICE
+  RESTART_SERVICE
+  RESTART_SERVER
+  SHUTDOWN_SERVER
+  POWERSHELL_EXEC
+}
+
+enum CommandStatus {
+  PENDING
+  SENT
+  SUCCESS
+  FAILED
+  TIMEOUT
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  WEBHOOK
+}
+
+enum EventLogLevel {
+  ERROR
+  WARNING
+  INFORMATION
+  AUDIT_SUCCESS
+  AUDIT_FAILURE
+}
+
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  displayName  String
+  role         UserRole  @default(VIEWER)
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  refreshTokens     RefreshToken[]
+  notifications     Notification[]
+  auditLogs         AuditLog[]       @relation("AuditUser")
+  acknowledgedAlerts Alert[]         @relation("AcknowledgedByUser")
+
+  @@index([email])
+  @@index([role])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime
+  isRevoked Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model ServerGroup {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  color       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  servers ServerGroupAssignment[]
+
+  @@map("server_groups")
+}
+
+model Server {
+  id              String       @id @default(uuid())
+  hostname        String       @unique
+  displayName     String?
+  ipAddress       String
+  osVersion       String?
+  agentVersion    String?
+  apiKeyHash      String       @unique
+  status          ServerStatus @default(OFFLINE)
+  lastHeartbeatAt DateTime?
+  registeredAt    DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  // Hardware info
+  cpuModel      String?
+  cpuCores      Int?
+  totalMemoryMb Float?
+  totalDiskGb   Float?
+
+  groups           ServerGroupAssignment[]
+  metrics          Metric[]
+  metricAggregates MetricAggregate[]
+  eventLogs        EventLog[]
+  processes        ProcessSnapshot[]
+  windowsServices  WindowsServiceSnapshot[]
+  commands         AgentCommand[]
+  alertRules       AlertRule[]
+  alerts           Alert[]
+  networkInfo      NetworkSnapshot[]
+
+  @@index([status])
+  @@index([lastHeartbeatAt])
+  @@index([hostname])
+  @@map("servers")
+}
+
+model ServerGroupAssignment {
+  serverId      String
+  serverGroupId String
+  assignedAt    DateTime @default(now())
+
+  server      Server      @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  serverGroup ServerGroup @relation(fields: [serverGroupId], references: [id], onDelete: Cascade)
+
+  @@id([serverId, serverGroupId])
+  @@map("server_group_assignments")
+}
+
+model Metric {
+  id        String     @id @default(uuid())
+  serverId  String
+  type      MetricType
+  value     Float
+  metadata  Json?
+  timestamp DateTime
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@index([serverId, type, timestamp])
+  @@index([timestamp])
+  @@map("metrics")
+}
+
+model MetricAggregate {
+  id          String     @id @default(uuid())
+  serverId    String
+  type        MetricType
+  interval    String
+  min         Float
+  max         Float
+  avg         Float
+  p95         Float?
+  sampleCount Int
+  periodStart DateTime
+  periodEnd   DateTime
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@unique([serverId, type, interval, periodStart])
+  @@index([serverId, type, periodStart])
+  @@map("metric_aggregates")
+}
+
+model ProcessSnapshot {
+  id         String    @id @default(uuid())
+  serverId   String
+  pid        Int
+  name       String
+  cpuPercent Float
+  memoryMb   Float
+  startTime  DateTime?
+  timestamp  DateTime
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@index([serverId, timestamp])
+  @@map("process_snapshots")
+}
+
+model WindowsServiceSnapshot {
+  id          String   @id @default(uuid())
+  serverId    String
+  serviceName String
+  displayName String
+  status      String
+  startType   String
+  timestamp   DateTime
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@index([serverId, timestamp])
+  @@index([serverId, serviceName])
+  @@map("windows_service_snapshots")
+}
+
+model EventLog {
+  id         String        @id @default(uuid())
+  serverId   String
+  source     String
+  eventId    Int?
+  level      EventLogLevel
+  message    String
+  provider   String?
+  occurredAt DateTime
+  receivedAt DateTime      @default(now())
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@index([serverId, occurredAt])
+  @@index([serverId, level])
+  @@index([serverId, source, occurredAt])
+  @@map("event_logs")
+}
+
+model NetworkSnapshot {
+  id                String   @id @default(uuid())
+  serverId          String
+  interfaceName     String
+  bandwidthInBps    BigInt
+  bandwidthOutBps   BigInt
+  activeConnections Int
+  openPorts         Json?
+  timestamp         DateTime
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@index([serverId, timestamp])
+  @@map("network_snapshots")
+}
+
+model AlertRule {
+  id               String                @id @default(uuid())
+  name             String
+  serverId         String?
+  metricType       MetricType
+  condition        String
+  threshold        Float
+  duration         Int
+  severity         AlertSeverity
+  channels         NotificationChannel[]
+  webhookUrl       String?
+  emailRecipients  String[]
+  isEnabled        Boolean               @default(true)
+  cooldownMinutes  Int                   @default(15)
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  server Server? @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  alerts Alert[]
+
+  @@index([serverId, metricType])
+  @@index([isEnabled])
+  @@map("alert_rules")
+}
+
+model Alert {
+  id               String      @id @default(uuid())
+  alertRuleId      String
+  serverId         String
+  status           AlertStatus @default(ACTIVE)
+  triggerValue     Float
+  message          String
+  triggeredAt      DateTime    @default(now())
+  acknowledgedAt   DateTime?
+  acknowledgedById String?
+  resolvedAt       DateTime?
+
+  alertRule      AlertRule          @relation(fields: [alertRuleId], references: [id], onDelete: Cascade)
+  server         Server             @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  acknowledgedBy User?              @relation("AcknowledgedByUser", fields: [acknowledgedById], references: [id])
+  notifications  AlertNotification[]
+
+  @@index([serverId, status])
+  @@index([alertRuleId])
+  @@index([triggeredAt])
+  @@index([status])
+  @@map("alerts")
+}
+
+model AlertNotification {
+  id        String              @id @default(uuid())
+  alertId   String
+  channel   NotificationChannel
+  payload   Json
+  sentAt    DateTime?
+  success   Boolean             @default(false)
+  error     String?
+  createdAt DateTime            @default(now())
+
+  alert Alert @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@index([alertId])
+  @@map("alert_notifications")
+}
+
+model AgentCommand {
+  id          String        @id @default(uuid())
+  serverId    String
+  type        CommandType
+  payload     Json?
+  status      CommandStatus @default(PENDING)
+  result      Json?
+  issuedById  String
+  issuedAt    DateTime      @default(now())
+  sentAt      DateTime?
+  completedAt DateTime?
+  timeoutAt   DateTime?
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@index([serverId, status])
+  @@index([issuedAt])
+  @@map("agent_commands")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  title     String
+  body      String
+  link      String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String
+  action     String
+  targetType String
+  targetId   String?
+  details    Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  user User @relation("AuditUser", fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([action])
+  @@index([targetType, targetId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model SystemSettings {
+  id              String   @id @default("singleton")
+  smtpHost        String?
+  smtpPort        Int?     @default(587)
+  smtpUser        String?
+  smtpPass        String?
+  smtpFrom        String?
+  smtpTls         Boolean  @default(true)
+  webhookDefaults Json?
+  updatedAt       DateTime @updatedAt
+
+  @@map("system_settings")
+}

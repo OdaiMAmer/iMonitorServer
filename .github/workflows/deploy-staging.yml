@@ -1,0 +1,148 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: staging-deployment
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+  COMPOSE_FILE: docker-compose.staging.yml
+  ENV_FILE: .env.staging
+
+jobs:
+  test-backend:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: imonitor_ci_db
+          POSTGRES_USER: imonitor_ci
+          POSTGRES_PASSWORD: ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U imonitor_ci -d imonitor_ci_db"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Run database migrations
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://imonitor_ci:ci_password@localhost:5432/imonitor_ci_db?schema=public
+
+      - name: Run tests
+        run: npm test
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://imonitor_ci:ci_password@localhost:5432/imonitor_ci_db?schema=public
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          JWT_SECRET: ci-test-jwt-secret
+
+  test-frontend:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+  build-and-deploy:
+    name: Build & Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-frontend]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker images
+        run: |
+          docker compose -f ${{ env.COMPOSE_FILE }} --env-file ${{ env.ENV_FILE }} build --no-cache
+
+      - name: Validate Docker Compose config
+        run: |
+          docker compose -f ${{ env.COMPOSE_FILE }} --env-file ${{ env.ENV_FILE }} config --quiet
+
+      - name: Deploy to staging
+        run: |
+          chmod +x deploy-staging.sh
+          ./deploy-staging.sh up
+
+      - name: Verify deployment health
+        run: |
+          echo "Waiting for services to stabilize..."
+          sleep 30
+
+          echo "Checking frontend health..."
+          curl -f http://localhost:8098/health || exit 1
+
+          echo "Checking backend health..."
+          curl -f http://localhost:3098/api/v1/health || exit 1
+
+          echo "All staging services are healthy!"
+
+      - name: Show deployment status
+        if: always()
+        run: |
+          docker compose -f ${{ env.COMPOSE_FILE }} --env-file ${{ env.ENV_FILE }} -p imonitor-staging ps -a
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          docker compose -f ${{ env.COMPOSE_FILE }} --env-file ${{ env.ENV_FILE }} -p imonitor-staging logs --tail=200
